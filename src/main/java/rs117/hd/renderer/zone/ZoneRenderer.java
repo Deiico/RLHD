@@ -134,6 +134,13 @@ public class ZoneRenderer implements Renderer {
 	@Inject
 	private SceneShaderProgram sceneProgram;
 
+	// Added for HD Region Locker GPU: exposes the scene shader so a companion plugin can read
+	// its compiled GL program handle (see ShaderProgram#getProgram) and push region-lock
+	// uniforms into it each frame.
+	public SceneShaderProgram getSceneProgram() {
+		return sceneProgram;
+	}
+
 	@Inject
 	private ShadowShaderProgram.Fast fastShadowProgram;
 
