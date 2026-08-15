@@ -63,6 +63,85 @@ in FragmentData {
 
 out vec4 FragColor;
 
+// HD Region Locker GPU: region-lock chunk shading, ported from the original region-locker GPU
+// addon's vanilla-GpuPlugin shader patch (region_locker_vert/frag), but computed entirely here
+// per-fragment from IN.position rather than per-vertex with an interpolated varying - works
+// identically for both the ZONE_RENDERER and legacy renderer paths (IN.position is common to
+// both), and is cheap enough on modern hardware that the original's "once per vertex"
+// optimization doesn't matter. See region_locker_frag()'s early return and
+// region_locker_blendSoftLight()'s base clamp for why the blend is skipped/guarded rather than
+// always computed and discarded via mix(..., 0.0) like the original did.
+#define REGION_LOCKER_LOCKED_REGIONS_SIZE 16
+uniform int region_locker_useGray;
+uniform int region_locker_baseX;
+uniform int region_locker_baseY;
+uniform int region_locker_lockedRegions[REGION_LOCKER_LOCKED_REGIONS_SIZE];
+uniform bool region_locker_useHardBorder;
+uniform vec4 region_locker_configGrayColor;
+uniform float region_locker_configGrayAmount;
+
+int region_locker_toRegionId(int x, int y) {
+    return (x >> 13 << 8) + (y >> 13);
+}
+
+float region_locker_isLocked(int x, int y) {
+    const ivec2 regionOffsets[5] = ivec2[](
+        ivec2(0, 0),
+        ivec2(-1, -1),
+        ivec2(-1, 1),
+        ivec2(1, -1),
+        ivec2(1, 1)
+    );
+
+    x = x + region_locker_baseX;
+    y = y + region_locker_baseY;
+    for (int j = 0; j < regionOffsets.length(); ++j) {
+        ivec2 off = regionOffsets[j];
+        int region = region_locker_toRegionId(x + off.x, y + off.y);
+        for (int i = 0; i < REGION_LOCKER_LOCKED_REGIONS_SIZE; ++i) {
+            if (region_locker_lockedRegions[i] == region) {
+                return 0.0;
+            }
+        }
+    }
+    return 1.0;
+}
+
+float region_locker_blendSoftLight(float base, float blend) {
+    // 117HD's lit surface colors aren't hard-clamped to [0,1] before this runs (e.g. rough
+    // materials at grazing angles can dip a channel slightly negative before tone mapping), and
+    // sqrt() of a negative base is NaN. Clamping base defends against that regardless of which
+    // branch actually executes.
+    base = max(base, 0.0);
+    return blend < 0.5 ?
+        2.0 * base * blend + base * base * (1.0 - 2.0 * blend) :
+        sqrt(base) * (2.0 * blend - 1.0) + 2.0 * base * (1.0 - blend);
+}
+
+vec3 region_locker_blendSoftLight(vec3 base, vec3 blend, float opacity) {
+    blend = vec3(
+        region_locker_blendSoftLight(base.r, blend.r),
+        region_locker_blendSoftLight(base.g, blend.g),
+        region_locker_blendSoftLight(base.b, blend.b)
+    );
+    return mix(base, blend, opacity);
+}
+
+void region_locker_frag(inout vec4 color, vec3 worldPos) {
+    float finalGrayAmount = float(region_locker_useGray) * region_locker_isLocked(int(worldPos.x), int(worldPos.z));
+    if (finalGrayAmount <= 0.0)
+        return;
+
+    if (region_locker_useHardBorder)
+        finalGrayAmount = 1;
+
+    vec3 grayColor = vec3(dot(color.rgb, vec3(0.299, 0.587, 0.114)));
+    grayColor = mix(color.rgb, grayColor, region_locker_configGrayAmount);
+    grayColor = region_locker_blendSoftLight(
+        grayColor, region_locker_configGrayColor.rgb, region_locker_configGrayColor.a);
+    color.rgb = mix(color.rgb, grayColor, finalGrayAmount);
+}
+
 vec2 worldUvs(float scale) {
     return -IN.position.xz / (128 * scale);
 }
@@ -537,6 +616,8 @@ void main() {
     #if WINDOWS_HDR_CORRECTION
         outputColor.rgb = windowsHdrCorrection(outputColor.rgb);
     #endif
+
+    region_locker_frag(outputColor, IN.position);
 
     FragColor = outputColor;
 }
