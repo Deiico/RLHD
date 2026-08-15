@@ -145,14 +145,18 @@ import static rs117.hd.utils.buffer.GLBuffer.STORAGE_IMMUTABLE;
 import static rs117.hd.utils.buffer.GLBuffer.STORAGE_PERSISTENT;
 import static rs117.hd.utils.buffer.GLBuffer.STORAGE_WRITE;
 
+// @PluginDescriptor removed for HD Region Locker GPU: this class is started/stopped manually
+// by com.regionlockerhd.RegionLockerHdGpuPlugin instead of being auto-discovered by RuneLite's
+// plugin manager as its own top-level plugin, the same technique the original region-locker
+// GPU addon used for vanilla GpuPlugin. Original descriptor, for reference:
+// @PluginDescriptor(
+//     name = "117 HD",
+//     description = "GPU renderer with a suite of graphical enhancements",
+//     tags = { "hd", "high", "detail", "graphics", "shaders", "textures", "gpu", "shadows", "lights" },
+//     conflicts = "GPU"
+// )
 @Slf4j
 @Singleton
-@PluginDescriptor(
-	name = "117 HD",
-	description = "GPU renderer with a suite of graphical enhancements",
-	tags = { "hd", "high", "detail", "graphics", "shaders", "textures", "gpu", "shadows", "lights" },
-	conflicts = "GPU"
-)
 @PluginDependency(EntityHiderPlugin.class)
 public class HdPlugin extends Plugin {
 	public static final ResourcePath PLUGIN_DIR = Props
@@ -1732,8 +1736,13 @@ public class HdPlugin extends Plugin {
 
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event) {
-		// Exit if the plugin is off, the config is unrelated to the plugin, or if switching to a profile with the plugin turned off
-		if (!isActive || !event.getGroup().equals(CONFIG_GROUP) || !pluginManager.isPluginEnabled(this))
+		// Exit if the plugin is off, or the config is unrelated to the plugin.
+		// pluginManager.isPluginEnabled(this) is not used here (unlike upstream) because it reads
+		// @PluginDescriptor off this class via reflection, which HD Region Locker GPU removes (see
+		// above) - it would NPE on every config change instead of returning false. isActive already
+		// covers "plugin off" for this fork, since com.regionlockerhd.RegionLockerHdGpuPlugin is the
+		// only thing that starts/stops this instance and toggles isActive accordingly.
+		if (!isActive || !event.getGroup().equals(CONFIG_GROUP))
 			return;
 
 		synchronized (this) {
