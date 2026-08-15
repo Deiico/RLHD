@@ -31,6 +31,13 @@ public class ShaderProgram implements Destructible {
 	@Getter
 	private boolean viable = true;
 
+	// Added for HD Region Locker GPU: exposes the compiled GL program handle so a companion
+	// plugin can push its own uniforms into the active scene shader each frame, the same way
+	// the original region-locker GPU addon did for vanilla GpuPlugin's glProgram field.
+	public int getProgram() {
+		return program;
+	}
+
 	public ShaderProgram(Consumer<ShaderTemplate> templateConsumer) {
 		shaderTemplate = new ShaderTemplate();
 		templateConsumer.accept(shaderTemplate);
