@@ -68,9 +68,10 @@ out vec4 FragColor;
 // per-fragment from IN.position rather than per-vertex with an interpolated varying - works
 // identically for both the ZONE_RENDERER and legacy renderer paths (IN.position is common to
 // both), and is cheap enough on modern hardware that the original's "once per vertex"
-// optimization doesn't matter. See region_locker_frag()'s early return and
-// region_locker_blendSoftLight()'s base clamp for why the blend is skipped/guarded rather than
-// always computed and discarded via mix(..., 0.0) like the original did.
+// optimization doesn't matter. See region_locker_frag()'s early return for why the blend is
+// skipped rather than always computed and discarded via mix(..., 0.0) like the original did,
+// and its final mix() (not the original's soft-light blend) for why near-black fragments still
+// tint correctly.
 #define REGION_LOCKER_LOCKED_REGIONS_SIZE 16
 uniform int region_locker_useGray;
 uniform int region_locker_baseX;
@@ -107,26 +108,6 @@ float region_locker_isLocked(int x, int y) {
     return 1.0;
 }
 
-float region_locker_blendSoftLight(float base, float blend) {
-    // 117HD's lit surface colors aren't hard-clamped to [0,1] before this runs (e.g. rough
-    // materials at grazing angles can dip a channel slightly negative before tone mapping), and
-    // sqrt() of a negative base is NaN. Clamping base defends against that regardless of which
-    // branch actually executes.
-    base = max(base, 0.0);
-    return blend < 0.5 ?
-        2.0 * base * blend + base * base * (1.0 - 2.0 * blend) :
-        sqrt(base) * (2.0 * blend - 1.0) + 2.0 * base * (1.0 - blend);
-}
-
-vec3 region_locker_blendSoftLight(vec3 base, vec3 blend, float opacity) {
-    blend = vec3(
-        region_locker_blendSoftLight(base.r, blend.r),
-        region_locker_blendSoftLight(base.g, blend.g),
-        region_locker_blendSoftLight(base.b, blend.b)
-    );
-    return mix(base, blend, opacity);
-}
-
 void region_locker_frag(inout vec4 color, vec3 worldPos) {
     float finalGrayAmount = float(region_locker_useGray) * region_locker_isLocked(int(worldPos.x), int(worldPos.z));
     if (finalGrayAmount <= 0.0)
@@ -137,8 +118,14 @@ void region_locker_frag(inout vec4 color, vec3 worldPos) {
 
     vec3 grayColor = vec3(dot(color.rgb, vec3(0.299, 0.587, 0.114)));
     grayColor = mix(color.rgb, grayColor, region_locker_configGrayAmount);
-    grayColor = region_locker_blendSoftLight(
-        grayColor, region_locker_configGrayColor.rgb, region_locker_configGrayColor.a);
+    // Straight linear mix toward the configured tint, not the original vanilla-GpuPlugin
+    // technique's soft-light blend: soft-light can only scale a fragment relative to its own
+    // existing brightness, so a near-black fragment (unlit at night, in shadow, in a mining pit)
+    // stays black no matter the tint color or opacity - the tint silently disappears exactly
+    // where it's most needed. A linear mix always reaches toward the tint proportional to
+    // opacity regardless of the base's brightness, the same principle RegionShadeOverlay's plain
+    // alpha composite over the rendered scene already relies on.
+    grayColor = mix(grayColor, region_locker_configGrayColor.rgb, region_locker_configGrayColor.a);
     color.rgb = mix(color.rgb, grayColor, finalGrayAmount);
 }
 
@@ -611,13 +598,21 @@ void main() {
         outputColor.rgb = mix(outputColor.rgb, fogColor, combinedFog);
     }
 
+    // Blend region-lock tinting here, before gamma correction, not after: 117HD's lit colors
+    // aren't clamped to [0,1] at this point and can dip slightly negative on some materials
+    // (rough surfaces at grazing angles, before tone mapping). pow(negative, fractionalExponent)
+    // below is NaN in GLSL - if this ran after that pow() call, a negative input would already
+    // be NaN by the time it got here, and NaN poisons every mix()/dot() downstream (silently
+    // rendering black) while being invisible to any "< threshold" style safety check, since
+    // IEEE-754 comparisons against NaN are always false. Blending here, in linear space, avoids
+    // the whole failure mode - mix/dot are well-defined for negative reals.
+    region_locker_frag(outputColor, IN.position);
+
     outputColor.rgb = pow(outputColor.rgb, vec3(gammaCorrection));
 
     #if WINDOWS_HDR_CORRECTION
         outputColor.rgb = windowsHdrCorrection(outputColor.rgb);
     #endif
-
-    region_locker_frag(outputColor, IN.position);
 
     FragColor = outputColor;
 }
